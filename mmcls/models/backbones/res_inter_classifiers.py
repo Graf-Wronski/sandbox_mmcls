@@ -4,6 +4,7 @@ from torch.hub import load_state_dict_from_url
 from torchvision.models.resnet import ResNet, Bottleneck
 from torch import load, save, sum # WIP: Not needed in final version I guess
 from pathlib import Path
+from collections import OrderedDict
 
 import sys
 import pdb
@@ -13,6 +14,7 @@ import pdb
 
 from ..builder import BACKBONES
 from .base_backbone import BaseBackbone
+from ..backbones import ResNet_CIFAR
 
 @BACKBONES.register_module()
 
@@ -35,7 +37,8 @@ class res_inter_classifiers(nn.Module):
 
         # super(ResNet, self).__init__()
 
-        self.model = ResNet(block=Bottleneck, layers = [3, 4, 6, 3], num_classes=1000)
+        self.model = ResNet_CIFAR(depth=50)
+        # self.model2 = ResNet(block=Bottleneck, layers = [3, 4, 6, 3], num_classes=10)
 
         # ResNet will be pretrained in the project group at one point
         # Alternative: Get ResNet from the web
@@ -44,41 +47,45 @@ class res_inter_classifiers(nn.Module):
 
             dirname = Path(__file__).parent.parent.parent.parent
             print(dirname)
-            resnet_path = dirname /  'work_dirs/resnet50cifar10.pth'
+            resnet_path_backbone = dirname /  'work_dirs/resnet50cifar10_backbone.pth'
             # model_path = dirname /  'results_early_exit/checkpoints/EE-resnet50-pytorch.pth'
 
-            print(f"resnet_path: {resnet_path}")
+            print(f"resnet_path_backbone: {resnet_path_backbone}")
 
-            if (resnet_path).is_file():
-                state_dict = load(resnet_path)
-                self.model.load_state_dict(state_dict)
-                print(f"{resnet_path} used.")
-
+            if (resnet_path_backbone).is_file():
+                
+                state_dict = load(resnet_path_backbone)
             
-            save(self.model.state_dict(), resnet_path)
+                state_dict = OrderedDict([(k.replace("backbone.", "").replace("head.", ""),v) for k,v in state_dict.items()])
+                
+
+                self.model.fc = nn.Linear(2048, 10, bias=True)
+                self.model.load_state_dict(state_dict)
+
+                print(f"{resnet_path_backbone} used.")
+
+            save(self.model.state_dict(), resnet_path_backbone)
 
             self.layer1 = nn.Sequential(
                 self.model.conv1,
                 self.model.bn1,
                 self.model.relu,
-                self.model.maxpool,
                 self.model.layer1
             )
 
             self.earlyExit1 = nn.Sequential(
-                nn.Conv2d(256, 512, 3, 1),
+                nn.Conv2d(256, 512, 5, 3),
                 nn.BatchNorm2d(512, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True),
                 nn.ReLU(),
-                nn.Conv2d(512, 1024, 3, 1),
+                nn.Conv2d(512, 1024, 5, 2),
                 nn.BatchNorm2d(1024, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True),
                 nn.ReLU(),
-                nn.Conv2d(1024, 2048, 3, 1),
+                nn.Conv2d(1024, 2048, 3, 2),
                 nn.BatchNorm2d(2048, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True),
                 nn.ReLU(),
-                self.model.avgpool,
+                nn.AvgPool2d(3, stride=2, padding=1),
                 nn.Flatten(),
                 self.model.fc,
-                nn.Linear(in_features=1000, out_features=10, bias=True),
                 nn.Softmax(dim=1)
             )
 
@@ -92,10 +99,10 @@ class res_inter_classifiers(nn.Module):
 
             self.layer4 = nn.Sequential(
                 self.model.layer4,
-                self.model.avgpool,
+                nn.AvgPool2d(3, stride=2, padding=1),
                 nn.Flatten(),
+                nn.Linear(8192, 2048),
                 self.model.fc,
-                nn.Linear(in_features=1000, out_features=10, bias=True),
                 nn.Softmax(dim=1)
             )
 
@@ -131,7 +138,7 @@ class res_inter_classifiers(nn.Module):
     def forward_test(self, x):
 
             x = self.layer1(x)
-            
+
             y1 = self.earlyExit1(x)
 
             # [1, 256, H/4, W/4]
